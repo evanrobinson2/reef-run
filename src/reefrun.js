@@ -621,6 +621,7 @@ const GAME = (() => {
     warpT = 0; warpCue = false; warpFire = 0;
     if (typeof REALMS !== 'undefined') REALMS.reset(); // every run starts in Space Outside
     applyDiff();
+    try { netFetch(); } catch {} // the world high-score table for this difficulty (NET is declared further down)
     for (let v = 0; v < 3; v++) { vars[v].inst.set(baseInst[v]); vars[v].dirty = true; }
     for (let i = nD0; i < nT; i++) { TX[i] = TX0[i]; TY[i] = TY0[i]; TZ[i] = TZ0[i]; TVX[i] = TV0[i * 3]; TVY[i] = TV0[i * 3 + 1]; TVZ[i] = TV0[i * 3 + 2]; DST[i] = 0; DAGE[i] = 0; }
     for (let i = 0; i < nT; i++) { THP[i] = THPM[i]; TFL[i] = 0; showTarget(i, i < nPrim); }
@@ -1462,7 +1463,28 @@ const GAME = (() => {
   let SCORE_KEY = SCORE_BASE; const scoreKey = () => (SCORE_KEY = diffKey === 'medium' ? SCORE_BASE : SCORE_BASE + ':' + diffKey);
   const tally = { active: false, phase: 'off', gate: false, row: 0, t: 0, tick: 0, rows: [], total: 0, rank: -1, slot: 0, ini: [0, 0, 0], fireHeld: true, rep: 0, repDir: 0, wait: 0, table: null };
   let tEl = null, tRows = null, tHi = null, tIni = null, tTab = null, tFoot = null, tTitle = null;
-  function loadScores() { scoreKey(); try { const a = JSON.parse(localStorage.getItem(SCORE_KEY) || '[]'); return Array.isArray(a) ? a.filter((e) => e && typeof e.s === 'number' && typeof e.n === 'string').slice(0, ARCADE.table) : []; } catch { return []; } }
+  // shared high scores (carpetshark: "make high scores persistent"): on the site, /api/scores keeps one world table per
+  // difficulty (site/api/scores.js). The game shows the world table merged with this browser's own; offline, or when the
+  // page is opened anywhere without that API, it is the local table only, as before.
+  const NET = { on: location.protocol.startsWith('http'), top: {}, busy: {} };
+  function netFetch(d = diffKey) {
+    if (!NET.on || NET.busy[d]) return; NET.busy[d] = true;
+    fetch('api/scores?d=' + d, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && Array.isArray(j.top)) NET.top[d] = j.top; })
+      .catch(() => {}).finally(() => { NET.busy[d] = false; });
+  }
+  function netPost(n, s) {
+    if (!NET.on || !(s >= 1)) return; const d = diffKey;
+    fetch('api/scores', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ d, n, s: Math.round(s) }) })
+      .then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && Array.isArray(j.top)) NET.top[d] = j.top; }).catch(() => {});
+  }
+  netFetch();
+  const okRow = (e) => e && typeof e.s === 'number' && typeof e.n === 'string';
+  function localScores() { scoreKey(); try { const a = JSON.parse(localStorage.getItem(SCORE_KEY) || '[]'); return Array.isArray(a) ? a.filter(okRow) : []; } catch { return []; } }
+  function loadScores() {
+    const seen = new Set(), out = [];
+    for (const e of [...localScores(), ...(NET.top[diffKey] || []).filter(okRow)]) { const k = e.n + '|' + Math.round(e.s); if (!seen.has(k)) { seen.add(k); out.push({ n: e.n, s: e.s, t: e.t || 0 }); } }
+    return out.sort((a, b) => b.s - a.s).slice(0, ARCADE.table);
+  }
   function saveScores(a) { scoreKey(); try { localStorage.setItem(SCORE_KEY, JSON.stringify(a.slice(0, ARCADE.table))); } catch {} }
   const fmt = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   function tallyBuild() {
@@ -1501,7 +1523,7 @@ const GAME = (() => {
       team += total; if (total > topV) { topV = total; top = p; tie = false; } else if (total === topV) tie = true;
     }
     const M = tally.mp = { cols, team, bTime, bClean, top: tie ? -1 : top, cells: [], me: [], queue: [], teamRank: -1 };
-    tally.total = team; tally.gate = gate; tally.active = true; tally.phase = 'count'; tally.t = 0; tally.tick = 0; tally.fireHeld = true; tally.wait = 0.6; tally.rank = -1; tally.row = 0; tally.rows = [];
+    tally.total = team; tally.gate = gate; tally.active = true; tally.phase = 'count'; netFetch(); tally.t = 0; tally.tick = 0; tally.fireHeld = true; tally.wait = 0.6; tally.rank = -1; tally.row = 0; tally.rows = [];
     tTitle.textContent = (gate ? 'Through the Ring Gate' : 'Hull breached') + ' · ' + NP + ' gunners · ' + DF.label + (DF.score !== 1 ? ' ×' + DF.score : '');
     const tb = document.createElement('table'), row = (label, cls) => { const tr = tb.insertRow(); if (cls) tr.className = cls; tr.insertCell().textContent = label; return tr; };
     const hd = tb.createTHead().insertRow(); hd.appendChild(document.createElement('th'));
@@ -1555,7 +1577,7 @@ const GAME = (() => {
       ['Run score', score, 'n', 0], ['Kills', kills, 'k', 0], ['Accuracy', round(acc * 100), '%', bAcc], ['Best chain', bestCombo, 'x', bChain],
       ['Time bonus', gate ? runT : 0, gate ? 't' : '-', bTime], ['No-damage bonus', clean ? 1 : 0, 'c', bClean]];
     tally.total = score + bAcc + bChain + bTime + bClean;
-    tally.gate = gate; tally.active = true; tally.phase = 'count'; tally.row = 0; tally.t = 0; tally.tick = 0; tally.fireHeld = true; tally.wait = 0.6; tally.rank = -1;
+    tally.gate = gate; tally.active = true; tally.phase = 'count'; netFetch(); tally.row = 0; tally.t = 0; tally.tick = 0; tally.fireHeld = true; tally.wait = 0.6; tally.rank = -1;
     tTitle.textContent = (gate ? 'Through the Ring Gate' : 'Hull breached') + ' · ' + DF.label + (DF.score !== 1 ? ' ×' + DF.score : '');
     tRows.textContent = '';
     for (const r of tally.rows.concat([['Total', tally.total, 'n', 0]])) {
@@ -1590,7 +1612,8 @@ const GAME = (() => {
   function drawIni() { for (let k = 0; k < ARCADE.initials; k++) { const e = tIni.children[k]; e.textContent = String.fromCharCode(65 + tally.ini[k]); e.className = k === tally.slot ? 'c' : ''; } }
   function tallySave() {
     const n = String.fromCharCode(...tally.ini.map((c) => 65 + c)), a = tally.table.slice();
-    a.splice(tally.rank, 0, { n, s: tally.total, t: Date.now() }); saveScores(a);
+    a.splice(tally.rank, 0, { n, s: tally.total, t: Date.now() }); saveScores(a); netPost(n, tally.total);
+    if (NET.top[diffKey]) NET.top[diffKey] = [{ n, s: tally.total, t: Date.now() }, ...NET.top[diffKey]].sort((x, y) => y.s - x.s).slice(0, ARCADE.table);
     try { localStorage.setItem(SCORE_BASE + ':last', n); } catch {}
     hud.event('coin'); tIni.style.display = 'none';
     if (tally.mp) { for (let i = 0; i < tally.mp.me.length; i++) if (tally.mp.me[i] >= tally.rank) tally.mp.me[i]++; tally.mp.me.push(tally.rank); mpNextInitials(); return; }
